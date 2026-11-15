@@ -25,15 +25,22 @@ function signatureFor(secret, rawBody, format) {
 
 function verifySignature(secret, rawBody, headerValue, format) {
   if (!secret || !headerValue) return false;
-  const expected = signatureFor(secret, rawBody, format);
-  const a = Buffer.from(expected);
+  const hex = hmacHex(secret, rawBody);
+  // Accept BOTH encodings on inbound requests: the platform signs
+  // preflight as `sha256=<hex>` but task dispatches may arrive as raw
+  // hex (or vice versa). The configured `format` is tried first, then
+  // the other one. Outbound signing still uses `format` only.
+  const preferred = format === 'sha256=' ? 'sha256=' + hex : hex;
+  const other = format === 'sha256=' ? hex : 'sha256=' + hex;
   const b = Buffer.from(String(headerValue));
-  if (a.length !== b.length) return false;
-  try {
-    return crypto.timingSafeEqual(a, b);
-  } catch {
-    return false;
+  for (const candidate of [preferred, other]) {
+    const a = Buffer.from(candidate);
+    if (a.length !== b.length) continue;
+    try {
+      if (crypto.timingSafeEqual(a, b)) return true;
+    } catch { /* try next candidate */ }
   }
+  return false;
 }
 
 module.exports = { hmacHex, signatureFor, verifySignature };
