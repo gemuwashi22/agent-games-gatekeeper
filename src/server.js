@@ -68,6 +68,7 @@ const health = {
   ok: true,
   hmacConfigured: Boolean(HMAC_SECRET),
   hmacFormat: HMAC_FORMAT,
+  preflightBody: 'spaced',
   taskIdMode: TASK_ID_MODE,
   kurierConfigured: Boolean(KURIER_API_KEY),
   selfTest: { ran: false, proveOk: false, verified: false, ms: null, error: null },
@@ -85,6 +86,15 @@ function sendJson(res, status, obj, sign) {
   }
   res.writeHead(status, headers);
   res.end(body);
+}
+
+function sendRaw(res, status, rawBody, sign) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (sign && HMAC_SECRET) {
+    headers['x-agent-games-signature'] = signatureFor(HMAC_SECRET, rawBody, HMAC_FORMAT);
+  }
+  res.writeHead(status, headers);
+  res.end(rawBody);
 }
 
 function readBody(req) {
@@ -166,10 +176,18 @@ async function handleGatekeeper(req, res) {
   }
 
   // 2. Preflight: {"type":"agent-games.preflight.v1"} ->
-  //    {"ok":true,"protocolVersion":"v1"} (signed).
+  //    {"ok": true, "protocolVersion": "v1"} (signed, SPACED body).
+  //    The platform rejected the minified body in all 4 signature
+  //    encodings (hex, sha256=, base64, sha256=base64) even with a fresh
+  //    secret, while our signing code is byte-identical to the reference
+  //    implementation (which was only ever tested locally, never against
+  //    the live platform). Likely cause: the verifier re-serializes the
+  //    JSON before checking (Python json.dumps style: space after ':'
+  //    and ','). Sending + signing the spaced form passes BOTH a
+  //    raw-body verifier and a re-serializing verifier.
   if (msg.type === 'agent-games.preflight.v1') {
     log('[gatekeeper] preflight OK');
-    return sendJson(res, 200, { ok: true, protocolVersion: 'v1' }, true);
+    return sendRaw(res, 200, '{"ok": true, "protocolVersion": "v1"}', true);
   }
 
   if (msg.type !== 'agent-games.proof-gatekeeper.v1' || !msg.task_id || !msg.input) {
