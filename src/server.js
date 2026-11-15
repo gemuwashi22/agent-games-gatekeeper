@@ -15,7 +15,7 @@
 //   AGENT_GAMES_HMAC_SECRET      from the dashboard ("Rotate Secret"); without
 //                                it, inbound HMAC verification is DISABLED
 //                                (health shows it) — set it before going live
-//   AGENT_GAMES_HMAC_FORMAT      "hex" (default) or "sha256="
+//   AGENT_GAMES_HMAC_FORMAT      "hex" (default), "sha256=", "base64", or "sha256=base64"
 //   GATEKEEPER_TASK_ID_MODE      "keccak" (default), "numeric", or "hex"
 //   KURIER_API_KEY               optional; free key from https://kurier.xyz
 //   KURIER_API_URL               default https://api.kurier.xyz/api/v1
@@ -67,6 +67,7 @@ const startedAt = Date.now();
 const health = {
   ok: true,
   hmacConfigured: Boolean(HMAC_SECRET),
+  hmacFormat: HMAC_FORMAT,
   taskIdMode: TASK_ID_MODE,
   kurierConfigured: Boolean(KURIER_API_KEY),
   selfTest: { ran: false, proveOk: false, verified: false, ms: null, error: null },
@@ -238,7 +239,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  log(`[server] listening on :${PORT} (taskIdMode=${TASK_ID_MODE}, hmac=${HMAC_SECRET ? 'configured' : 'NOT CONFIGURED'}, kurier=${KURIER_API_KEY ? 'configured' : 'not configured'})`);
+  log(`[server] listening on :${PORT} (taskIdMode=${TASK_ID_MODE}, hmac=${HMAC_SECRET ? 'configured' : 'NOT CONFIGURED'}, hmacFormat=${HMAC_FORMAT}, kurier=${KURIER_API_KEY ? 'configured' : 'not configured'})`);
   runSelfTest();
 });
 

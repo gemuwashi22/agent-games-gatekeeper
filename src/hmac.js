@@ -6,11 +6,15 @@
 // BEFORE parsing JSON, and sign every response the same way (header over
 // the raw response body).
 //
-// Format note: the official docs do not state the exact header encoding.
-// The standard assumption is a lowercase hex HMAC-SHA256 of the raw body.
-// If the platform rejects the preflight, set AGENT_GAMES_HMAC_FORMAT=sha256=
-// to send/verify the `sha256=<hex>` form instead. Preflight is the
-// verification step for the format.
+// Format note: the official docs do not state the exact header encoding,
+// so the encoding is configurable and inbound verification accepts ALL
+// known encodings. Outbound signing uses AGENT_GAMES_HMAC_FORMAT:
+//   "hex" (default)   -> <lowercase hex>
+//   "sha256="         -> sha256=<lowercase hex>
+//   "base64"          -> <base64>
+//   "sha256=base64"   -> sha256=<base64>
+// Preflight is the verification step for the format: try them in order
+// (hex, sha256=, base64, sha256=base64) until preflight passes.
 
 const crypto = require('crypto');
 
@@ -18,22 +22,37 @@ function hmacHex(secret, rawBody) {
   return crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
 }
 
+function hmacBase64(secret, rawBody) {
+  return crypto.createHmac('sha256', secret).update(rawBody).digest('base64');
+}
+
 function signatureFor(secret, rawBody, format) {
   const hex = hmacHex(secret, rawBody);
-  return format === 'sha256=' ? 'sha256=' + hex : hex;
+  switch (format) {
+    case 'sha256=': return 'sha256=' + hex;
+    case 'base64': return hmacBase64(secret, rawBody);
+    case 'sha256=base64': return 'sha256=' + hmacBase64(secret, rawBody);
+    default: return hex;
+  }
 }
 
 function verifySignature(secret, rawBody, headerValue, format) {
   if (!secret || !headerValue) return false;
   const hex = hmacHex(secret, rawBody);
-  // Accept BOTH encodings on inbound requests: the platform signs
-  // preflight as `sha256=<hex>` but task dispatches may arrive as raw
-  // hex (or vice versa). The configured `format` is tried first, then
-  // the other one. Outbound signing still uses `format` only.
-  const preferred = format === 'sha256=' ? 'sha256=' + hex : hex;
-  const other = format === 'sha256=' ? hex : 'sha256=' + hex;
+  const b64 = hmacBase64(secret, rawBody);
+  // Configured format first, then every other known encoding, so a
+  // platform that signs requests and verifies responses in different
+  // encodings still works.
+  const all = [
+    signatureFor(secret, rawBody, format),
+    hex,
+    'sha256=' + hex,
+    b64,
+    'sha256=' + b64,
+  ];
+  const ordered = [...new Set(all)];
   const b = Buffer.from(String(headerValue));
-  for (const candidate of [preferred, other]) {
+  for (const candidate of ordered) {
     const a = Buffer.from(candidate);
     if (a.length !== b.length) continue;
     try {
@@ -43,4 +62,4 @@ function verifySignature(secret, rawBody, headerValue, format) {
   return false;
 }
 
-module.exports = { hmacHex, signatureFor, verifySignature };
+module.exports = { hmacHex, hmacBase64, signatureFor, verifySignature };
