@@ -4,6 +4,7 @@
 // built-in crypto has SHA3-256, which is NOT the same as Keccak-256).
 
 const { keccak_256 } = require('js-sha3');
+const { poseidon9 } = require('poseidon-lite');
 
 const FIELD_PRIME = BigInt(
   '21888242871839275222246405745257275088548364400416034343698204186575808495617'
@@ -53,6 +54,19 @@ function keccak256ModP(buffers) {
   return toField(BigInt(keccak256Hex(buffers)));
 }
 
+// Strategy commitment (Steal the VFY): Poseidon(params[0..7], salt).
+// Verified against the official vfy-policy circuit: the circuit's
+// commitment input equals Poseidon(strategyParams + salt) — params first,
+// salt last. (Only that ordering passes the circuit's witness calculation.)
+function strategyCommitment(params, salt) {
+  if (!Array.isArray(params) || params.length !== 8) {
+    throw new Error('strategyCommitment needs exactly 8 strategy params');
+  }
+  const inputs = [...params.map((p) => toField(p)), toFieldHex(salt)];
+  const h = poseidon9(inputs);
+  return '0x' + BigInt(h).toString(16).padStart(64, '0');
+}
+
 module.exports = {
   FIELD_PRIME,
   toField,
@@ -61,4 +75,5 @@ module.exports = {
   to32Bytes,
   keccak256Hex,
   keccak256ModP,
+  strategyCommitment,
 };

@@ -79,6 +79,16 @@ What the host needs: Node >= 22, always-on during rounds (17:30–03:30 WIB dail
 5. **Enter the Proof Gatekeeper event** from the Events page once the agent is registered and preflight passes. Do this BEFORE round 4 opens (Mon 16 Nov 17:30 WIB) to catch the remaining rounds 4–8.
 6. **Hosting decision**: Railway account (recommended) or own PC/VPS — the agent cannot run on this VM (see above). If Railway: link the repo / deploy `~/workspace/agent-games` (Node 22, `npm start`, set the env vars in Railway, not in the repo).
 
+## Steal the VFY — added Mon 2026-11-16 ~06:30–07:00 WIB (coordinator task)
+
+- Same server, additive `POST /steal` handler; Gatekeeper code path untouched (re-ran 22/22 + 17/17, unchanged).
+- Protocol from official /build §06 + /api/circuit-info, validated against the official vfy-policy circuit (sha256-identical to the public reference's copies). Full docs in STEAL.md.
+- Strategy **"always EXTRACT 10"** (`10,0,0,0,0,0,0,0`): extract 10 dominates smaller amounts (same 0 cost, gain 10 vs 5 unfortified / 4 vs 0 fortified); FORTIFY is dominated by EXTRACT in every single-turn comparison (costs 2, blocks 6, forgoes your own extract); minOpponentBalance 0 avoids forced HOLDs while the opponent still extracts from you. Unbeaten except by the mirror (draw). See STEAL.md for the full analysis.
+- Commitment for those params: `0x0bfddb9d54008554f717a00e0c9939efd5b8fab8b9bb34fce0ca4af73ecd16c5` (salt in local `.env`, gitignored — NEVER in the repo or the scaffold zip). Verified end-to-end: real-values EXTRACT 10 proof in 1,228 ms, verifies locally.
+- Tests: `test-steal.js` **65/65**, `smoke-steal.js` **30/30** (turn answered in 585 ms; proof inside policyProof AND at top level; commitment-mismatch → HOLD; retry → cached).
+- Still needed from the user (before 17:30 WIB today, R4): register the commitment in the dashboard (My Agents → Edit agent → Steal the VFY → "Set up strategy commitment"), create Railway service 2 with agent 2's HMAC secret + the steal env vars, set its endpoint to `https://<service-2-domain>/steal`, preflight + practice, enter the Steal event. Full checklist in STEAL.md.
+- Open items: the exact dashboard commitment-form fields (hash per the docs/reference — unconfirmed from here); turn-response signature format assumed minified like Gatekeeper (preflight needs the spaced body); fortify duration ("this turn" per the guide vs `*FortifiedUntilTurn` fields); per-turn scoring beyond the −2 invalid-proof rule is unpublished.
+
 ## Open items (confirm in practice, not in code)
 
 - `taskId` mapping default `keccak256(task_id) mod p` — unconfirmed until a practice task's proof is accepted; `numeric`/`hex` are the fallbacks.

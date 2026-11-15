@@ -1,8 +1,12 @@
-// Agent Games — Proof Gatekeeper agent server (Node.js, plain http).
+// Agent Games — Proof Gatekeeper + Steal the VFY agent server (Node.js, plain http).
 //
 // Endpoints:
 //   GET  /health      — liveness + self-test status (no auth)
-//   POST /gatekeeper  — task endpoint (register this full path in the dashboard)
+//   POST /gatekeeper  — Proof Gatekeeper tasks (register this full path)
+//   POST /steal       — Steal the VFY turns (register this full path)
+//                      * both verify x-agent-games-signature over the RAW
+//                        body; both answer preflight with the SPACED body
+//                        '{"ok": true, "protocolVersion": "v1"}' (signed)
 //                      * verifies x-agent-games-signature over the RAW body
 //                      * preflight {"type":"agent-games.preflight.v1"} ->
 //                        {"ok":true,"protocolVersion":"v1"} (signed)
@@ -38,6 +42,9 @@ const { decide, store } = require('./decide');
 const { proveTask } = require('./prove');
 const { verifyLocally } = require('./snark');
 const { submitProof } = require('./kurier');
+const { toHexString, strategyCommitment } = require('./field');
+const { policy, validateParams } = require('./steal-policy');
+const { proveTurn } = require('./steal-prove');
 
 // --- minimal .env loader (no dependency; never overrides real env) ---
 (function loadDotEnv() {
@@ -62,6 +69,52 @@ const HMAC_FORMAT = process.env.AGENT_GAMES_HMAC_FORMAT || 'hex';
 const TASK_ID_MODE = process.env.GATEKEEPER_TASK_ID_MODE || 'keccak';
 const KURIER_API_KEY = process.env.KURIER_API_KEY || '';
 const KURIER_WAIT_MS = 20000; // bounded; proof gen ~0.4s, total stays << 60s
+const KURIER_WAIT_MS_STEAL = 12000; // bounded; vfy-policy proof ~1.8s
+
+// --- Steal the VFY configuration (env) ---
+// STEAL_STRATEGY_PARAMS: 8 comma-separated numbers, e.g. "10,0,0,0,0,0,0,0".
+// STEAL_STRATEGY_SALT: random hex (never logged, never committed).
+// STEAL_STRATEGY_COMMITMENT: optional override — the hash registered in the
+//   dashboard. If unset, it is computed as Poseidon(params + salt) at
+//   startup and MUST equal the registered hash, or every Steal proof fails.
+// If params/salt are unset, the server still runs: Steal answers HOLD
+// without a proof (fail closed) and Gatekeeper is unaffected.
+const STEAL_PARAMS_RAW = (process.env.STEAL_STRATEGY_PARAMS || '').trim();
+const STEAL_SALT_RAW = (process.env.STEAL_STRATEGY_SALT || '').trim();
+const STEAL_COMMITMENT_ENV = (process.env.STEAL_STRATEGY_COMMITMENT || '').trim();
+let stealParams = null;
+let stealSalt = '';
+let stealCommitment = '';
+let stealReady = false;
+let stealStatus = 'not-configured';
+(function initSteal() {
+  if (!STEAL_PARAMS_RAW || !STEAL_SALT_RAW) {
+    stealStatus = 'not-configured (set STEAL_STRATEGY_PARAMS + STEAL_STRATEGY_SALT — Steal answers HOLD without a proof)';
+    return;
+  }
+  const params = STEAL_PARAMS_RAW.split(',').map((s) => s.trim());
+  const err = validateParams(params);
+  if (err) {
+    stealStatus = 'invalid: ' + err;
+    return;
+  }
+  stealParams = params;
+  stealSalt = toHexString(STEAL_SALT_RAW);
+  try {
+    stealCommitment = STEAL_COMMITMENT_ENV
+      ? toHexString(STEAL_COMMITMENT_ENV)
+      : strategyCommitment(params, stealSalt);
+  } catch (e) {
+    stealStatus = 'invalid: commitment failed — ' + e.message;
+    return;
+  }
+  stealReady = true;
+  stealStatus = 'ready';
+})();
+
+// Idempotency cache for Steal turns: a retry of the same (matchId, turn)
+// returns the identical response (same idempotencyKey, same proof).
+const stealResponses = {};
 
 const startedAt = Date.now();
 const health = {
@@ -72,6 +125,12 @@ const health = {
   taskIdMode: TASK_ID_MODE,
   kurierConfigured: Boolean(KURIER_API_KEY),
   selfTest: { ran: false, proveOk: false, verified: false, ms: null, error: null },
+  steal: {
+    status: stealStatus,
+    ready: stealReady,
+    commitment: stealCommitment || null,
+    selfTest: { ran: false, proveOk: false, verified: false, ms: null, error: null },
+  },
 };
 
 function log(...args) {
@@ -145,6 +204,26 @@ async function runSelfTest() {
   } catch (e) {
     health.selfTest = { ran: true, proveOk: false, verified: false, ms: Date.now() - t0, error: e.message };
     log('[self-test] FAILED:', e.message);
+  }
+  // Steal self-test (only when the strategy is configured): prove an
+  // EXTRACT turn and verify it locally against the vfy-policy circuit.
+  const st0 = Date.now();
+  try {
+    if (!stealReady) {
+      health.steal.selfTest = { ran: false, proveOk: false, verified: false, ms: null, error: 'strategy not configured' };
+      log('[self-test] steal SKIPPED (strategy not configured)');
+      return;
+    }
+    const turn = { matchId: '9f4e1b2a-0000-0000-0000-000000000001', turn: 3, state: { selfBalance: '95', opponentBalance: '105' } };
+    const action = policy(turn.state, stealParams);
+    if (action.type !== 'EXTRACT') throw new Error('self-test action was ' + action.type);
+    const { proof, publicSignals } = await proveTurn(turn, action, stealCommitment, stealSalt, stealParams);
+    const verified = await verifyLocally('vfyPolicy', publicSignals, proof);
+    health.steal.selfTest = { ran: true, proveOk: true, verified, ms: Date.now() - st0, error: null };
+    log(`[self-test] steal EXTRACT proof generated + verified locally in ${health.steal.selfTest.ms}ms`);
+  } catch (e) {
+    health.steal.selfTest = { ran: true, proveOk: false, verified: false, ms: Date.now() - st0, error: e.message };
+    log('[self-test] steal FAILED:', e.message);
   }
 }
 
@@ -236,6 +315,148 @@ async function handleGatekeeper(req, res) {
   return sendJson(res, 200, response, true);
 }
 
+// --- Steal the VFY ---
+// Turn envelope (official /build §06):
+//   { protocolVersion, eventId: "steal-the-vfy", mode, matchId, turn,
+//     issuedAt, deadlineAt,
+//     state: { selfBalance, opponentBalance, selfFortifiedUntilTurn,
+//              opponentFortifiedUntilTurn },
+//     strategyCommitment: { hash }, resolverVersion, nonce }
+// Response (official /build §06 — proof + public_signals MUST sit INSIDE
+// policyProof; the guide calls leaving them out the #1 cause of lost
+// turns. We ALSO carry them at the top level (belt-and-braces, mirroring
+// the gatekeeper shape and the public reference); see STEAL.md.
+// action.amount is present ONLY for EXTRACT — the schema rejects it on
+// HOLD/FORTIFY even as 0.)
+// Fail closed: any uncertainty -> HOLD without a proof (a missing proof
+// costs -2 and resolves as HOLD; a timeout or crash forfeits the turn).
+async function handleSteal(req, res) {
+  const t0 = Date.now();
+  let raw;
+  try {
+    raw = await readBody(req);
+  } catch (e) {
+    return sendJson(res, 400, { error: e.message }, false);
+  }
+
+  // 1. Verify the inbound signature over the RAW body before parsing.
+  if (HMAC_SECRET) {
+    const sig = req.headers['x-agent-games-signature'];
+    if (!verifySignature(HMAC_SECRET, raw, sig, HMAC_FORMAT)) {
+      log('[steal] 401 bad signature');
+      return sendJson(res, 401, { error: 'bad signature' }, false);
+    }
+  } else {
+    log('[steal] WARNING: HMAC secret not configured — accepting unsigned request (dev mode)');
+  }
+
+  let msg;
+  try {
+    msg = JSON.parse(raw.toString('utf8'));
+  } catch {
+    return sendJson(res, 400, { error: 'invalid JSON' }, true);
+  }
+
+  // 2. Preflight: same handshake as Gatekeeper, same SPACED body
+  // (the platform's verifier re-serializes JSON before checking the
+  // signature — the minified body was rejected live for Gatekeeper).
+  if (msg.type === 'agent-games.preflight.v1') {
+    log('[steal] preflight OK');
+    return sendRaw(res, 200, '{"ok": true, "protocolVersion": "v1"}', true);
+  }
+
+  const matchId = msg.matchId || '';
+  const turn = msg.turn;
+  const state = msg.state || {};
+  const envelopeCommitment = msg.strategyCommitment && msg.strategyCommitment.hash;
+
+  const holdResponse = (withProof) => {
+    const body = {
+      matchId, turn,
+      action: { type: 'HOLD' },
+      agentTimestamp: new Date().toISOString(),
+      idempotencyKey: crypto.randomUUID(),
+    };
+    if (withProof) {
+      body.policyProof = withProof.policyProof;
+      body.proof = withProof.proof;
+      body.public_signals = withProof.publicSignals;
+    } else {
+      body.policyProof = { circuitVersion: 'v1' };
+    }
+    return { status: 200, body };
+  };
+
+  if (!matchId || turn === undefined || turn === null
+      || state.selfBalance === undefined || state.opponentBalance === undefined) {
+    return sendJson(res, 400, { error: 'malformed turn envelope' }, true);
+  }
+
+  // 3. Idempotency: a retry of the same (matchId, turn) returns the
+  // identical response (same idempotencyKey, same proof).
+  const cacheKey = `${matchId}:${turn}`;
+  if (stealResponses[cacheKey]) {
+    log(`[steal] ${cacheKey} retry -> cached ${stealResponses[cacheKey].action.type}`);
+    return sendJson(res, 200, stealResponses[cacheKey], true);
+  }
+
+  // 4. Strategy not configured -> HOLD without a proof (fail closed).
+  if (!stealReady) {
+    log(`[steal] ${cacheKey} strategy not configured — HOLD without proof`);
+    const r = holdResponse(null);
+    stealResponses[cacheKey] = r.body;
+    return sendJson(res, 200, r.body, true);
+  }
+
+  // 5. The envelope's frozen commitment must match the registered one.
+  if (envelopeCommitment && String(envelopeCommitment).toLowerCase() !== stealCommitment.toLowerCase()) {
+    log(`[steal] ${cacheKey} envelope commitment mismatch — HOLD without proof`);
+    const r = holdResponse(null);
+    stealResponses[cacheKey] = r.body;
+    return sendJson(res, 200, r.body, true);
+  }
+
+  // 6. Decide (deterministic threshold policy — must match the circuit).
+  const action = policy(
+    { selfBalance: BigInt(state.selfBalance), opponentBalance: BigInt(state.opponentBalance) },
+    stealParams
+  );
+
+  // 7. Prove. On any failure, answer HOLD without a proof (fail closed).
+  let response;
+  try {
+    const { proof, publicSignals, publicInputsHash } = await proveTurn(
+      { matchId, turn, state }, action, stealCommitment, stealSalt, stealParams
+    );
+    const verified = await verifyLocally('vfyPolicy', publicSignals, proof);
+    if (!verified) throw new Error('local proof verification failed');
+    const policyProof = { circuitVersion: 'v1', proof, public_signals: publicSignals, publicInputsHash };
+    // Kurier (optional, best-effort, bounded wait; never blocks the reply).
+    if (KURIER_API_KEY && Date.now() - t0 < 15000) {
+      const k = await submitProof(KURIER_API_KEY, 'vfyPolicy', proof, publicSignals, KURIER_WAIT_MS_STEAL);
+      if (k && k.proofReference) policyProof.proofReference = k.proofReference;
+    }
+    const actionOut = { type: action.type };
+    if (action.type === 'EXTRACT') actionOut.amount = action.amount;
+    response = {
+      matchId, turn, action: actionOut, policyProof,
+      proof, public_signals: publicSignals,
+      agentTimestamp: new Date().toISOString(),
+      idempotencyKey: crypto.randomUUID(),
+    };
+  } catch (e) {
+    log(`[steal] ${cacheKey} proof generation failed (${e.message}) — HOLD without proof`);
+    const r = holdResponse(null);
+    stealResponses[cacheKey] = r.body;
+    return sendJson(res, 200, r.body, true);
+  }
+
+  // 8. Cache, then reply (signed).
+  stealResponses[cacheKey] = response;
+  log(`[steal] ${cacheKey} ${action.type}${action.amount ? ' ' + action.amount : ''} +proof in ${Date.now() - t0}ms`);
+  return sendJson(res, 200, response, true);
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     if (req.method === 'GET' && req.url === '/health') {
@@ -246,6 +467,9 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && req.url === '/gatekeeper') {
       return await handleGatekeeper(req, res);
+    }
+    if (req.method === 'POST' && req.url === '/steal') {
+      return await handleSteal(req, res);
     }
     return sendJson(res, 404, { error: 'not found' }, false);
   } catch (e) {
@@ -258,6 +482,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   log(`[server] listening on :${PORT} (taskIdMode=${TASK_ID_MODE}, hmac=${HMAC_SECRET ? 'configured' : 'NOT CONFIGURED'}, hmacFormat=${HMAC_FORMAT}, kurier=${KURIER_API_KEY ? 'configured' : 'not configured'})`);
+  log(`[server] steal: ${stealStatus}${stealCommitment ? ' commitment=' + stealCommitment : ''}`);
   runSelfTest();
 });
 

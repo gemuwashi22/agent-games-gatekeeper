@@ -1,9 +1,12 @@
-# Agent Games — Proof Gatekeeper agent
+# Agent Games — Proof Gatekeeper + Steal the VFY agent
 
 Scaffold for **@gemuwashi** (registered via X, 2026-11-16 ~03:10 WIB),
 zkVerify Agent Games Season 01. Competition closes **2026-11-21T22:00Z**.
 Proof Gatekeeper: 8 daily rounds 13–20 Nov, 8 tasks/agent/round, 60s window,
 cumulative scoring. Round 4 opens Mon 16 Nov 17:30 WIB.
+Steal the VFY: Swiss R4–R7 + Top 16 knockout, 13–17 Nov, 20 turns/match,
+daily window 17:30–03:30 WIB — agent GEMUWASHI 2, strategy "always
+EXTRACT 10". Full Steal docs: **STEAL.md**.
 
 ## What it does
 
@@ -30,6 +33,15 @@ Plain Node.js `http` server (no framework). `POST /gatekeeper`:
 
 `GET /health` reports HMAC/Kurier config and the startup proof self-test.
 
+## Steal the VFY (GEMUWASHI 2)
+
+Same server, `POST /steal` — see **STEAL.md** for the protocol, the
+"always EXTRACT 10" strategy and its rationale, the exact commitment to
+register, and the Railway service 2 deployment checklist. Tests:
+`npm run test:steal` (65 passed) and `npm run test:smoke-steal`
+(30 passed). The commitment must be registered in the dashboard before
+the next Swiss pairing (17:30 WIB Mon 16 Nov, R4).
+
 ## Run
 
 ```
@@ -52,16 +64,24 @@ generation — the circuit is the referee).
 ## Files
 
 ```
-src/server.js        entry point (GET /health, POST /gatekeeper)
+src/server.js        entry point (GET /health, POST /gatekeeper, POST /steal)
 src/decide.js        7-trap checklist + seen-set + response cache (data/)
 src/prove.js         circuit input mapping, taskId -> field element
-src/field.js         BN128 field arithmetic, keccak256
+src/field.js         BN128 field arithmetic, keccak256, Poseidon commitment
 src/hmac.js          HMAC-SHA256 verify/sign
 src/snark.js         snarkjs wrapper (prove / verifyLocally)
 src/kurier.js        Kurier submit-proof + poll to Finalized (optional)
+src/steal-policy.js  Steal threshold policy + param validation
+src/steal-prove.js   Steal circuit input mapping, publicInputsHash, proveTurn
+src/steal-commitment.js  CLI: prints ONLY the commitment hash
 test/test-gatekeeper.js
+test/test-steal.js   policy-vs-circuit grid + commitment + hash + full prove
+test/smoke-steal.js  live HTTP smoke test for POST /steal
 circuits/            official gatekeeper.wasm + gatekeeper_final.zkey
                      vkHash 0x6b79c6012a6d8651f3e13bc4d2a20370280ab49700c90c5316d4168bfbad77b0
+                     + official vfy-policy.wasm + vfy-policy_final.zkey
+                     vkHash 0x6c56509f1c56fd1fd4e9737f906d2220f4b95f1d507f1adf6899085bd74be047
+STEAL.md             Steal protocol, strategy, commitment, deployment checklist
 ```
 
 ## Dashboard steps (user, in the browser)

@@ -8,8 +8,11 @@
   },
   "scripts": {
     "start": "node src/server.js",
+    "commitment": "node src/steal-commitment.js",
     "test:gatekeeper": "node test/test-gatekeeper.js",
-    "test:smoke": "node test/smoke-live.js"
+    "test:steal": "node test/test-steal.js",
+    "test:smoke": "node test/smoke-live.js",
+    "test:smoke-steal": "node test/smoke-steal.js"
   },
   "keywords": [],
   "author": "",

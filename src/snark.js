@@ -12,6 +12,10 @@ const CIRCUITS = {
     wasm: path.join(CIRCUITS_DIR, 'gatekeeper.wasm'),
     zkey: path.join(CIRCUITS_DIR, 'gatekeeper_final.zkey'),
   },
+  vfyPolicy: {
+    wasm: path.join(CIRCUITS_DIR, 'vfy-policy.wasm'),
+    zkey: path.join(CIRCUITS_DIR, 'vfy-policy_final.zkey'),
+  },
 };
 
 const vkCache = {};
