@@ -12,7 +12,8 @@
     "test:gatekeeper": "node test/test-gatekeeper.js",
     "test:steal": "node test/test-steal.js",
     "test:smoke": "node test/smoke-live.js",
-    "test:smoke-steal": "node test/smoke-steal.js"
+    "test:smoke-steal": "node test/smoke-steal.js",
+    "test:seen-store": "node test/test-seen-store.js"
   },
   "keywords": [],
   "author": "",

@@ -288,6 +288,19 @@ async function handleGatekeeper(req, res) {
   const proofTx = String(task.input.proof_tx || '');
   const response = { decision, reason_code, proof_tx: proofTx };
 
+  // 4b. Atomically mark the proof as seen NOW (synchronously, before the
+  // async proof generation below) so a concurrent task carrying the same
+  // proof_tx is caught as PROOF_REUSED. Skipped when the decision itself
+  // is PROOF_REUSED (the reference is already recorded under the original
+  // task_id). This is the fix for the 18:04 WIB practice failure, where a
+  // reused proof_tx was approved because the seen set was empty after a
+  // redeploy — the in-memory set is now the source of truth and the file
+  // is write-through, so a record used to decide is never lost within
+  // this container's lifetime.
+  if (reason_code !== 'PROOF_REUSED') {
+    store.markSeen(task);
+  }
+
   // 5. Prove (except PROOF_REUSED, which carries no proof by platform rule).
   if (reason_code !== 'PROOF_REUSED') {
     try {
@@ -309,8 +322,10 @@ async function handleGatekeeper(req, res) {
     }
   }
 
-  // 7. Record the seen-set + response cache, then reply (signed).
-  store.record(task, response);
+  // 7. Cache the full response (proof included, if any) for idempotent
+  // retries, then reply (signed). The seen-set was already marked in
+  // step 4b, before proving.
+  store.cacheResponse(task, response);
   log(`[gatekeeper] ${task.task_id} ${decision}/${reason_code} in ${Date.now() - t0}ms${response.proof ? ' +proof' : ' (no proof)'}${response.proofReference ? ' +kurier' : ''}`);
   return sendJson(res, 200, response, true);
 }

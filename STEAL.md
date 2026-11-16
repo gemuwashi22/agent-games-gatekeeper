@@ -230,7 +230,7 @@ Generated 2026-11-16 ~06:35 WIB with `node src/steal-commitment.js`:
 | Value | Where it goes |
 |---|---|
 | **Strategy params:** `10,0,0,0,0,0,0,0` | Railway service 2 env `STEAL_STRATEGY_PARAMS` |
-| **Salt:** `0a2d728e44684a49d6d8f21369266c79` | Railway service 2 env `STEAL_STRATEGY_SALT` — **SECRET. Never in chat, never in the repo, never in a screenshot.** The parent agent holds it; the user pastes it into Railway. |
+| **Salt:** `[REDACTED — see Railway STEAL_STRATEGY_SALT / the salt file]` | Railway service 2 env `STEAL_STRATEGY_SALT` — **SECRET. Never in chat, never in the repo, never in a screenshot.** The parent agent holds it; the user pastes it into Railway. |
 | **Commitment:** `0x0bfddb9d54008554f717a00e0c9939efd5b8fab8b9bb34fce0ca4af73ecd16c5` | Dashboard strategy-commitment form (public value) |
 
 The commitment was verified end-to-end with these exact values: a real
@@ -277,7 +277,7 @@ account/repo as service 1 — **only the secret differs**.
    - `AGENT_GAMES_HMAC_SECRET` = GEMUWASHI 2's secret (from the
      dashboard "Rotate Secret" — shown once).
    - `STEAL_STRATEGY_PARAMS` = `10,0,0,0,0,0,0,0`
-   - `STEAL_STRATEGY_SALT` = `0a2d728e44684a49d6d8f21369266c79`
+   - `STEAL_STRATEGY_SALT` = `[REDACTED — see Railway / the salt file]`
    - `STEAL_STRATEGY_COMMITMENT` = leave **unset** (the server computes
      it as Poseidon(params + salt) at startup — it must equal the
      dashboard value; the startup log prints it for checking).
